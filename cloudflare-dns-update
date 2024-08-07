@@ -1,0 +1,70 @@
+############## Script Cloudflare Domains ##################
+# Requires policies: read, write, test, policy
+# Requires JSON parsing script in place: https://github.com/Winand/mikrotik-json-parser
+
+:log debug "### Running Cloudflare DNS update script ###";
+:log debug "# Prepare dependancies #";
+
+# Load library (set library functions to global variables)
+/system script run "JParseFunctions";
+:global JSONLoad; 
+:global JSONLoads;
+:global JSONUnload;
+
+:local APIKEY "APIKEY-GOES-HERE"; # From MyProfile -> API Tokens -> token with Zone.DNS Edit permission
+:local ZONEID "ZONE-ID-GOES-HERE"; # From Account -> Website/zone -> Overview
+
+:local LISTURL "https://api.cloudflare.com/client/v4/zones/$ZONEID/dns_records";
+
+:local HOSTNAME "a.domain.com"; # Record name to update
+:local HOSTNAMETYPE "A"; # Record type
+
+:log debug "# Getting current public IP address #";
+:local externalIp [/ip cloud get public-address]
+:log debug "Current IP address: $externalIp";
+
+:log debug "# Fetching current domains in zone '$ZONEID' #";
+:local listResponseData ([/tool fetch url=$LISTURL mode=https http-header-field="Authorization: Bearer $APIKEY" output=user as-value]->"data");
+:local dnsRecords ([$JSONLoads $listResponseData]->"result");
+
+:local targetDnsRecordId;
+:local targetDnsRecordIp;
+:foreach record in=$dnsRecords do={ 
+	:local recordName ($record->"name");
+	:local recordType ($record->"type");
+	:local recordId ($record->"id");
+	:local recordIp ($record->"content");
+	:if ($HOSTNAME = $recordName && $HOSTNAMETYPE = $recordType) do={ 
+		:set targetDnsRecordId $recordId;
+		:set targetDnsRecordIp $recordIp;
+	}
+};
+:log debug "DNS Record ID: $targetDnsRecordId";
+:log debug "Current: '$targetDnsRecordIp'; External: '$externalIp'";
+
+:log debug "# Checking if update is needed! #";
+:if ($targetDnsRecordIp = $externalIp) do={
+	:log debug "# IP has not changed. No action required for host '$HOSTNAME' #";
+} else={
+	:log debug "Update required!"
+	:local UPDATECONTENT "{\"content\":\"$externalIp\",\"name\":\"$HOSTNAME\",\"type\":\"$HOSTNAMETYPE\",\"id\":\"$targetDnsRecordId\"}";
+	:local UPDATEURL "https://api.cloudflare.com/client/v4/zones/$ZONEID/dns_records/$targetDnsRecordId";
+
+	:log debug " IP addresses does not match. Updating DNS IP for host '$HOSTNAME' #";
+	:local updateResponse [/tool fetch url=$UPDATEURL http-method=put mode=https http-header-field="Content-Type:application/json, Authorization: Bearer $APIKEY" http-data=$UPDATECONTENT output=user as-value];
+
+	:local updateResponseContent ($updateResponse->"data");
+	:log debug "Update response: $updateResponseContent";
+	
+	:log debug "# Flushing DNS cache #";
+	/ip dns cache flush;
+}
+
+:log debug "# Unload dependancies #";
+
+# Unload library (clear global variables)
+$JSONUnload;
+
+:log debug "### Completed execution of Cloudflare DNS update script ###";
+
+############## Script Cloudflare Domains ##################
